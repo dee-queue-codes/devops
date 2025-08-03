@@ -1,0 +1,68 @@
+services:
+  app-manager:
+    build: ./app-manager
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - .:/host
+      - /tmp/repos:/tmp/repos
+      - ./app-manager/apps:/app/apps
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    working_dir: /app
+    environment:
+      - NODE_ENV=production
+      - HOST_PROJECT_ROOT=/host
+      - NGINX_CONTAINER_NAME=devops-nginx-1
+      - COMPOSE_PROJECT_NAME=devops
+    expose:
+      - '3002'
+    networks:
+      - projects-network
+    restart: unless-stopped
+  nginx:
+    image: nginx:alpine
+    ports:
+      - '8080:80'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./dashboard.html:/usr/share/nginx/html/dashboard.html
+    depends_on:
+      - app-manager
+    networks:
+      - projects-network
+    restart: unless-stopped
+  projectx:
+    build:
+      context: ./app-manager/apps/projectx
+      dockerfile: Dockerfile
+    container_name: projectx
+    expose:
+      - '8083'
+    environment:
+      SERVER_PORT: '8083'
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://projectx-db:5432/projectx
+      SPRING_DATASOURCE_USERNAME: chelseaowusu
+      SPRING_DATASOURCE_PASSWORD: password
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      DATABASE_URL: postgresql://chelseaowusu:password@projectx-db:5432/projectx
+    networks:
+      - projects-network
+    depends_on:
+      - projectx-db
+  projectx-db:
+    image: postgres:16
+    container_name: projectx-db
+    environment:
+      POSTGRES_DB: projectx
+      POSTGRES_USER: chelseaowusu
+      POSTGRES_PASSWORD: password
+    volumes:
+      - projectx_data:/var/lib/postgresql/data
+    networks:
+      - projects-network
+networks:
+  projects-network:
+    driver: bridge
+volumes:
+  projectx_data: null
