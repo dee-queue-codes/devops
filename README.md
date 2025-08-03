@@ -44,42 +44,42 @@ docker-compose up --build
 ✅ Update nginx routing automatically
 ✅ Support Node.js, Java, Python, Go, PHP, and custom apps
 
-# Shutdown and restart
+##### **Shutdown and restart**
 docker-compose down &&  docker-compose up --build -d
 
-# Restart a specific service
+##### **Restart a specific service**
 docker-compose restart devops-app-manager-1
 docker-compose restart devops-nginx-1
 
-# Restart all services
+##### **Restart all services**
 docker-compose restart
 
-# Stop a specific service
+##### **Stop a specific service**
 docker-compose stop devops-app-manager-1
 docker-compose stop devops-nginx-1
 
-# Start a specific service
+##### **Start a specific service**
 docker-compose start devops-app-manager-1
 docker-compose start devops-nginx-1
 
-# Stop all services
+##### **Stop all services**
 docker-compose stop
 
-# Start all services
+##### **Start all services**
 docker-compose start
 
-# Read logs
+##### **Read logs**
 docker-compose logs
 
-# Read logs of a specific service
+##### **Read logs of a specific service**
 docker-compose logs devops-app-manager-1
 docker-compose logs devops-nginx-1
 
-# Follow logs
+##### **Follow logs**
 docker-compose logs -f
 docker-compose logs -f devops-app-manager-1
 docker-compose logs -f devops-nginx-1
 
-# Login to a specific container
+##### **Login to a specific container**
 docker exec -it devops-app-manager-1 /bin/bash
 docker exec -it devops-nginx-1 /bin/bash
