@@ -10,7 +10,42 @@ import fs from 'fs-extra';
 import * as tar from 'tar';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { WebSocketServer } from 'ws';
+import http from 'http';
 
+// Global WebSocket variables
+const wsConnections = new Map();
+
+// Function to send WebSocket messages
+export function sendWebSocketMessage(appName, message) {
+    const ws = wsConnections.get(appName);
+    if (ws && ws.readyState === ws.OPEN) {  // Fixed WebSocket.OPEN to ws.OPEN
+        ws.send(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            appName,
+            ...message
+        }));
+        console.log(`📤 Sent WebSocket message to ${appName}:`, message);
+    } else {
+        console.log(`⚠️ No WebSocket connection for ${appName} or connection is closed`);
+    }
+}
+
+export function broadcastMessage(message) {
+    wsConnections.forEach((ws, appName) => {
+        if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({
+                timestamp: new Date().toISOString(),
+                broadcast: true,
+                ...message
+            }));
+        }
+    });
+    console.log(`📡 Broadcasted message to ${wsConnections.size} clients:`, message);
+}
+
+
+// Initialize Express app
 const git = simpleGit();
 const execAsync = promisify(exec);
 const app = express();
@@ -23,6 +58,107 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+
+// Create HTTP server
+const server = http.createServer(app);
+
+// Create WebSocket server
+const wss = new WebSocketServer({
+    server,
+    path: '/ws'  // WebSocket endpoint will be ws://localhost:3002/ws
+});
+
+
+// WebSocket connection handling - FIXED
+wss.on('connection', (ws, req) => {
+    console.log('🔌 New WebSocket connection established');
+
+    // Extract app name from query parameters or headers
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const appName = url.searchParams.get('app') || 'default';
+
+    console.log(`📱 WebSocket connection for app: ${appName}`);
+
+    // Store the connection
+    wsConnections.set(appName, ws);
+
+    // Send welcome message
+    ws.send(JSON.stringify({
+        type: 'connection',
+        message: `Connected to app-manager WebSocket for ${appName}`,
+        timestamp: new Date().toISOString(),
+        appName
+    }));
+
+    // Handle incoming messages from client
+    ws.on('message', (data) => {
+        try {
+            const message = JSON.parse(data.toString());
+            console.log(`📥 Received message from ${appName}:`, message);
+
+            // Echo back or handle specific commands
+            if (message.type === 'ping') {
+                ws.send(JSON.stringify({
+                    type: 'pong',
+                    timestamp: new Date().toISOString(),
+                    appName
+                }));
+            }
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+            ws.send(JSON.stringify({
+                type: 'error',
+                message: 'Invalid JSON format',
+                timestamp: new Date().toISOString()
+            }));
+        }
+    });
+
+    // Handle connection close
+    ws.on('close', (code, reason) => {
+        console.log(`🔌 WebSocket connection closed for ${appName}: ${code} - ${reason}`);
+        wsConnections.delete(appName);
+    });
+
+    // Handle errors
+    ws.on('error', (error) => {
+        console.error(`❌ WebSocket error for ${appName}:`, error);
+        wsConnections.delete(appName);
+    });
+});
+
+// WebSocket server error handling
+wss.on('error', (error) => {
+    console.error('❌ WebSocket Server error:', error);
+});
+
+// Add endpoint to check WebSocket connections
+app.get('/api/websocket/status', (req, res) => {
+    const connections = Array.from(wsConnections.keys());
+    res.json({
+        activeConnections: connections.length,
+        connectedApps: connections,
+        wsServerRunning: wss.clients.size > 0
+    });
+});
+
+// Test endpoint to send WebSocket message
+app.post('/api/websocket/test', (req, res) => {
+    const { appName, message } = req.body;
+
+    if (!appName || !message) {
+        return res.status(400).json({ error: 'appName and message are required' });
+    }
+
+    sendWebSocketMessage(appName, {
+        type: 'test',
+        message: message
+    });
+
+    res.json({ success: true, message: `Test message sent to ${appName}` });
+});
+
 
 // Add this near the top of your file where you initialize handlebars
 handlebars.registerHelper('eq', function (a, b, options) {
@@ -94,74 +230,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \\
 {{#each startCommands}}
 {{#if @first}}CMD [{{#each this}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}}
 {{/each}}`,
-    javaOLD2: `FROM eclipse-temurin:{{javaVersion}}-jdk-jammy as builder
-WORKDIR /app
-{{#if isMaven}}
-# For Maven
-COPY pom.xml .
-COPY src ./src
-RUN ./mvnw clean package -DskipTests
-{{else}}
-# For Gradle
-# First copy only the Gradle wrapper files
-COPY gradlew .
-COPY gradle ./gradle
-# Then copy the build files
-COPY build.gradle settings.gradle ./
-# Set execute permission for gradlew
-RUN chmod +x gradlew
-# Copy source files
-COPY src ./src
-# Build the application
-RUN ./gradlew build -x test --no-daemon
-{{/if}}
-
-FROM eclipse-temurin:{{javaVersion}}-jre-jammy
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-
-# Copy the built JAR from the builder stage
-{{#if isMaven}}
-COPY --from=builder /app/target/*.jar app.jar
-{{else}}
-COPY --from=builder /app/build/libs/*.jar app.jar
-{{/if}}
-
-RUN addgroup --system spring && adduser --system --group spring
-RUN chown spring:spring app.jar
-USER spring:spring
-EXPOSE {{port}}
-{{#if healthCheck}}
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \\
-  CMD {{healthCheck}} || exit 1
-{{/if}}
-ENV JAVA_OPTS="-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
-{{#each startCommands}}
-{{#if @first}}CMD [{{#each this}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}}
-{{/each}}`,
-    javaOLD: `FROM eclipse-temurin:{{javaVersion}}-jre-jammy
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-{{#if isMaven}}
-COPY target/*.jar app.jar
-{{else if isGradle}}
-COPY build/libs/*.jar app.jar
-{{else}}
-COPY *.jar app.jar
-{{/if}}
-RUN addgroup --system spring && adduser --system --group spring
-RUN chown spring:spring app.jar
-USER spring:spring
-EXPOSE {{port}}
-{{#if healthCheck}}
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \\
-  CMD {{healthCheck}} || exit 1
-{{/if}}
-ENV JAVA_OPTS="-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
-{{#each startCommands}}
-{{#if @first}}CMD [{{#each this}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}}
-{{/each}}`,
-
     python: `FROM python:{{pythonVersion}}-slim
 WORKDIR /app
 {{#if requirements}}
@@ -296,7 +364,7 @@ app.post('/api/apps/create', async (req, res) => {
             healthCheck
         } = req.body;
 
-        console.log('Creating new app:', name);
+        console.log('🚀 Creating new app:', name);
 
         // Validate inputs
         if (!name || !githubRepo || !port || !appType || !startCommands) {
@@ -305,40 +373,132 @@ app.post('/api/apps/create', async (req, res) => {
             });
         }
 
-        // Check if port is already in use
-        const existingCompose = await readDockerCompose();
-        const usedPorts = getUsedPorts(existingCompose);
-        if (usedPorts.includes(port)) {
-            return res.status(400).json({
-                error: `Port ${port} is already in use. Available ports: ${getAvailablePorts(usedPorts).join(', ')}`
-            });
-        }
-
-        // Clone repository
-        const repoPath = await cloneRepository(githubRepo, credentials.githubPAT, name);
-        console.log('Repository cloned successfully');
-        // Generate Dockerfile
-        await generateDockerfile(repoPath, appType, appConfig, port, startCommands, buildCommand, healthCheck);
-        console.log('Dockerfile generated successfully');
-        // Update docker-compose.yml
-        await updateDockerCompose(name, port, environment, database, appConfig);
-        console.log('docker-compose.yml updated successfully');
-        // Update nginx configuration
-        await updateNginxConfig(name, port);
-        console.log('nginx configuration updated successfully');
-        // Build and start the new services
-        await buildAndStartServices(name);
-        console.log('services built and started successfully');
-
+        // Immediately send initial response
         res.json({
             success: true,
-            message: `App ${name} created successfully`,
+            message: `App ${name} creation started`,
+            status: 'in_progress',
             port: port,
-            url: `http://localhost:8080/${name}/`
+            url: `http://localhost:8080/${name}/`,
+            websocketUrl: `ws://localhost:3002/ws?app=${name}`
         });
 
+        // Send initial WebSocket message
+        sendWebSocketMessage(name, {
+            type: 'creation_started',
+            message: `Starting creation of app ${name}`,
+            status: 'in_progress',
+            progress: 0
+        });
+
+        // Start async process
+        const processAppCreation = async () => {
+            try {
+                // Check if port is already in use
+                const existingCompose = await readDockerCompose();
+                const usedPorts = getUsedPorts(existingCompose);
+                if (usedPorts.includes(port)) {
+                    sendWebSocketMessage(name, {
+                        type: 'error',
+                        error: `Port ${port} is already in use. Available ports: ${getAvailablePorts(usedPorts).join(', ')}`,
+                        status: 'failed'
+                    });
+                    return;
+                }
+
+                // Clone repository
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Cloning repository...',
+                    progress: 20
+                });
+
+                const repoPath = await cloneRepository(githubRepo, credentials.githubPAT, name);
+
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Repository cloned successfully',
+                    progress: 40
+                });
+
+                // Generate Dockerfile
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Generating Dockerfile...',
+                    progress: 50
+                });
+
+                await generateDockerfile(repoPath, appType, appConfig, port, startCommands, buildCommand, healthCheck);
+
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Dockerfile generated successfully',
+                    progress: 60
+                });
+
+                // Update docker-compose.yml
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Updating docker-compose.yml...',
+                    progress: 70
+                });
+
+                await updateDockerCompose(name, port, environment, database, appConfig);
+
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'docker-compose.yml updated successfully',
+                    progress: 80
+                });
+
+                // Update nginx configuration
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Updating nginx configuration...',
+                    progress: 85
+                });
+
+                await updateNginxConfig(name, port);
+
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'nginx configuration updated successfully',
+                    progress: 90
+                });
+
+                // Build and start the new services
+                sendWebSocketMessage(name, {
+                    type: 'progress',
+                    message: 'Building and starting services...',
+                    progress: 95
+                });
+
+                await buildAndStartServices(name);
+
+                sendWebSocketMessage(name, {
+                    type: 'completion',
+                    message: 'Services built and started successfully',
+                    status: 'completed',
+                    progress: 100,
+                    url: `http://localhost:8080/${name}/`,
+                    healthCheckUrl: `http://localhost:8080/${name}/health-check`
+                });
+
+            } catch (error) {
+                console.error('❌ Error creating app:', error);
+                sendWebSocketMessage(name, {
+                    type: 'error',
+                    error: error.message,
+                    status: 'failed'
+                });
+            }
+        };
+
+        // Start the async process
+        processAppCreation();
+
     } catch (error) {
-        console.error('Error creating app:', error);
+        console.error('❌ Error creating app:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -656,7 +816,7 @@ location /${name}/ {
     # Remove the prefix before proxying
     rewrite ^/${name}(/.*)$ $1 break;
     
-    proxy_pass http://$upstream_${name}/;
+    proxy_pass http://$upstream_${name};
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -906,7 +1066,7 @@ async function buildAndStartServices(name) {
         // Step 4: Verify service health (optional, non-blocking)
         console.log('🏥 Checking service health...');
         try {
-            await waitForServiceHealth(name, 10); // Wait up to 20 seconds
+            await waitForServiceHealth(name, 5); // Wait up to 20 seconds
             console.log(`✅ Service ${name} is healthy and ready`);
         } catch (healthError) {
             console.warn(`⚠️  Service ${name} health check failed, but nginx config is in place:`, healthError.message);
@@ -1009,7 +1169,8 @@ function getAvailablePorts(usedPorts) {
     return available;
 }
 
+// Start server
 const PORT = process.env.PORT || 3002;
-app.listen(PORT, () => {
-    console.log(`App Manager API running on port ${PORT}`);
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });

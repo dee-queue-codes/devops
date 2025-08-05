@@ -16,7 +16,8 @@
         "handlebars": "^4.7.8",
         "js-yaml": "^4.1.0",
         "simple-git": "^3.28.0",
-        "tar": "^7.4.3"
+        "tar": "^7.4.3",
+        "ws": "^8.17.0"
     },
     "devDependencies": {
         "nodemon": "^3.0.1"

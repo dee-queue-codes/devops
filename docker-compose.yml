@@ -18,6 +18,19 @@ services:
     networks:
       - projects-network
     restart: unless-stopped
+  localstack:
+    image: localstack/localstack
+    ports:
+      - 127.0.0.1:4566:4566
+      - 127.0.0.1:4510-4559:4510-4559
+    environment:
+      - DEBUG=0
+    volumes:
+      - ./localstack:/var/lib/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - projects-network
+    restart: unless-stopped
   nginx:
     image: nginx:alpine
     ports:
@@ -31,6 +44,38 @@ services:
     networks:
       - projects-network
     restart: unless-stopped
+  projectx:
+    build:
+      context: ./app-manager/apps/projectx
+      dockerfile: Dockerfile
+    container_name: projectx
+    expose:
+      - '8083'
+    environment:
+      SERVER_PORT: '8083'
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://projectx-db:5432/projectx
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: roottoor
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      DATABASE_URL: postgresql://postgres:password123@projectx-db:5432/projectx
+    networks:
+      - projects-network
+    depends_on:
+      - projectx-db
+  projectx-db:
+    image: postgres:16
+    container_name: projectx-db
+    environment:
+      POSTGRES_DB: projectx
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password123
+    volumes:
+      - projectx_data:/var/lib/postgresql/data
+    networks:
+      - projects-network
 networks:
   projects-network:
     driver: bridge
+volumes:
+  projectx_data: null

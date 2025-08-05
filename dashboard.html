@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Workspace</title>
     <style>
+      /* Existing styles */
+
       * {
         margin: 0;
         padding: 0;
@@ -712,7 +714,7 @@
         width: 20px;
         height: 20px;
         border: 3px solid #f3f3f3;
-        border-top: 3px solid #8b5cf6;
+        border-top: 3px solid #4caf50;
         border-radius: 50%;
         animation: spin 1s linear infinite;
       }
@@ -723,6 +725,57 @@
         }
         100% {
           transform: rotate(360deg);
+        }
+      }
+
+      /* Progress Container Styles */
+      .progress-container {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(255, 255, 255, 0.95);
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+        text-align: center;
+        min-width: 300px;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 4px;
+        background: #f0f0f0;
+        border-radius: 2px;
+        margin: 10px 0;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .progress-bar::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        background: #4caf50;
+        width: 0;
+        animation: progress 3s linear infinite;
+      }
+
+      .progress-text {
+        font-size: 16px;
+        color: #333;
+        margin: 10px 0;
+      }
+
+      @keyframes progress {
+        0% {
+          width: 0;
+        }
+        100% {
+          width: 100%;
         }
       }
 
@@ -1458,8 +1511,16 @@
         currentProject = projectName
         document.getElementById('overview').style.display = 'none'
         document.getElementById('project-detail').style.display = 'block'
-        document.getElementById('page-title').textContent = projectName.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-        document.getElementById('project-title').textContent = projectName.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+        document.getElementById('page-title').textContent = projectName
+          .toLowerCase()
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ')
+        document.getElementById('project-title').textContent = projectName
+          .toLowerCase()
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ')
         document.getElementById('new-btn-text').textContent = 'Add environment'
 
         // Filter services for this project
@@ -2230,17 +2291,72 @@
             throw new Error(result.error || 'Failed to create app')
           }
 
-          // Success!
-          showMessage(
-            `App "${formData.name}" created successfully! Access it at: ${
-              result.url || `http://localhost:8080/${formData.name}/`
-            }`
+          // Store form data in localStorage
+          localStorage.setItem(
+            'lastCreatedApp',
+            JSON.stringify(formData)
           )
 
-          // Refresh the dashboard data
-          setTimeout(async () => {
-            await loadDashboardData()
-          }, 5000)
+          // Close the modal
+          const modal = document.getElementById('create-app-modal')
+          modal.style.display = 'none'
+
+          // Connect to WebSocket for progress updates
+          const wsUrl = `${SERVER_URL.replace('http://', 'ws://')}/ws?app=${
+            formData.name
+          }`
+          console.log('Connecting to WebSocket:', wsUrl)
+          const ws = new WebSocket(wsUrl)
+
+          // Update UI with progress
+          const progressDiv = document.createElement('div')
+          progressDiv.className = 'progress-container'
+          progressDiv.innerHTML = `
+                <div class="progress-bar"></div>
+                <div class="progress-text">Creating app...</div>
+            `
+          document.body.appendChild(progressDiv)
+
+          ws.onmessage = event => {
+            const update = JSON.parse(event.data)
+
+            if (update.error) {
+              progressDiv.style.display = 'none'
+              throw new Error(update.error)
+            }
+
+            if (update.status === 'completed') {
+              progressDiv.style.display = 'none'
+              // Success!
+              showMessage(
+                `App "${formData.name}" created successfully! Access it at: ${
+                  result.url || `http://localhost:8080/${formData.name}/`
+                }`
+              )
+
+              // Close the form
+              document.querySelector('.create-app-form').style.display = 'none'
+
+              // Refresh the dashboard data
+              loadDashboardData()
+            } else if (update.status === 'failed') {
+              progressDiv.style.display = 'none'
+              throw new Error(update.error)
+            } else {
+              // Update progress text
+              progressDiv.querySelector('.progress-text').textContent =
+                update.message
+            }
+          }
+
+          ws.onclose = () => {
+            progressDiv.style.display = 'none'
+          }
+
+          ws.onerror = () => {
+            progressDiv.style.display = 'none'
+            throw new Error('WebSocket connection error')
+          }
         } catch (error) {
           console.error('Error creating app:', error)
           showMessage('Error creating app: ' + error.message, true)
